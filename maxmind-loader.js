@@ -1,147 +1,83 @@
-                 require('date-utils');                // JerrySievert/node-date-utils
-var fs         = require('fs')
-  , wget       = require('wgetjs')                     // angleman/wgetjs
-  , uncompress = require('compress-buffer').uncompress // egorfine/node-compress-buffer, used because decompress doesn't support just .gz
-  , tar        = require('tar')                        // isaacs/node-tar
-  , path       = require('path')
-;
+var fs = require('fs');
+var request = require('request');
+var zlib = require('zlib');
+var tar = require('tar');
+var path = require('path');
 
-// todo: consider using grimen/node-document-compressor-deflate
+require('date-utils');
 
 function maxloader(options, callback) {
-
 	if (typeof options === 'function') {
 		callback = options;
 		options  = {};
 	};
-	options         = options         || {};
- 	options.dest    = options.dest    || '/tmp/';
-	options.timeout = options.timeout || 15 * 60 * 1000; // 15 minutes instead of 2 second default
+	options = options || {};
+ 	options.dest = options.dest || '/tmp/';
+
+ 	// 15 minutes instead of 2 second default
+	options.timeout = options.timeout || 15 * 60 * 1000;
+
 	if (typeof options.extract === 'undefined') {
 		options.extract = true;
 	}
-	var edition     = options.edition || 132
-	  , offsets     = { su:0, mo:6, tu:5, we:4, th: 3, fr: 2, sa: 1 }
-	  , day_offset  = (options.day) ? options.day.substr(0.2).toLowerCase() : 'tu'
-	  , pre         = 'http://www.maxmind.com/app/download_new?edition_id=' + edition + '&date='
-	  , date        = new Date()
-	  , offset      = 0 - (offsets[day_offset] + date.getDay()) // days to prior day (tuesday)
-	;
+
+	var edition = options.edition || 132;
+	var offsets = { su:0, mo:6, tu:5, we:4, th: 3, fr: 2, sa: 1 };
+	var day_offset = (options.day) ? options.day.substr(0.2).toLowerCase() : 'tu';
+	var pre = 'http://www.maxmind.com/app/download_new?edition_id=' + edition + '&date=';
+	var date = new Date();
+	var offset = 0 - (offsets[day_offset] + date.getDay());
+
 	date.addDays(offset);
-	var year    = date.getFullYear()
-	  , month   = date.getMonth()+1
-	  , day     = date.getDate();
-	month       = (month > 9) ? month : '0' + month;
-	day         = (day > 9) ? day : '0' + day;
-	var date    = year + month + day
-	  , post    ="&suffix=tar.gz&license_key=" + options.license
-	  , source  = options.source || pre + date + post
-	;
+	var year = date.getFullYear();
+	var month = date.getMonth() + 1;
+	var day = date.getDate();
+
+	month = (month > 9) ? month : '0' + month;
+	day = (day > 9) ? day : '0' + day;
+	var date = year + month + day;
+	var post = "&suffix=tar.gz&license_key=" + options.license;
+	var source = options.source || pre + date + post;
+
 	options.url = (options.license) ? source : 'http://geolite.maxmind.com/download/geoip/database/GeoLiteCity.dat.gz';
 
-
-	function untar(tarsrc, outdir, outFile) {
+	function untar (tarsrc, outdir, outFile) {
 		fs.createReadStream(tarsrc)
-		  .pipe(tar.Extract({ path: outdir}))
+		  .pipe(tar.Extract({ path: outdir }))
 		  .on("error", function (err) {
 			  returnError(err);
 		  })
 		  .on("end", function () {
-			if (validateDatFile(outFile)) {
-				if (callback) {
-					callback(null, outFile);
-				}
-			}
-		  })
-		;
-	}
-
-
-	function returnError(message) {
-		if (typeof message == 'string') { // error from this layer?
-			message = "maxmind-loader error: " + message;
-			message = new Error(message);
-		}
-		if (callback) {
-			callback(message);
-		} else {
-			throw message;
-		}
-	}
-
-
-	function validateDatFile(testFile, size) {
-		size   = size || 14001000; // should be at least 14MB  
-		var ok = false;
-		if (fs.existsSync(testFile)) {
-			var fstat = fs.statSync(testFile);
-			if (fstat.size < size) {
-				returnError(testFile +  " is " + fstat.size + ", needs to be at least " + Math.round(size / 1000000) + 'MB');
-			} else {
-				ok = true;
-			}
-		} else {
-			returnError(testFile + " not found");
-		}
-		return ok
-	}
-
-
-	function validateGzFile(testFile) {
-		return validateDatFile(testFile, 9001000); // should be at least 9MB
-	}
-
-
-	function extractData(err, data) {
-		if (err) {
-			returnError(err);
-			return;
-		} else if (!data || !data.filepath) {
-			returnError('missing data.filepath');
-			return;
-		}
-
-		var gzFile       = data.filepath;
-		if (!validateGzFile(gzFile)) {                // return error if it's doesn't exist or isn't at least 9MB
-			return;
-		}
-		var outFile      = gzFile.replace('.gz', '');
-		var rawData      = fs.readFileSync(gzFile);
-		var uncompressed = uncompress(rawData);       // todo: find async version
-		var timerid      = null;
-
-		function finishUp() {
-			clearTimeout(timerid);
-			var paidFile   = outFile.replace('.tar', '').replace('download_new', '');
-			if (outFile != paidFile) { // paid data
-			    var outdir = path.dirname(outFile);
-			    untar(outFile, outdir, paidFile, attempt);
-			} else { // free data
 				if (validateDatFile(outFile)) {
 					if (callback) {
 						callback(null, outFile);
 					}
 				}
-			}
-		}
-
-		fs.writeFile(outFile, uncompressed, function(err) {
-			if (err) {
-				returnError(err);
-			} else {
-				timerid = setTimeout(finishUp, 1);
-			}
-		});
+		  });
 	}
 
+	var req = request(options);
 
-	if (options.extract) {
-		wget(options, extractData);
-	} else {
-		wget(options, callback);
-	}
+	req.on('error', callback);
+
+	req.on('response', function (res) {
+    if (res.statusCode !== 200) throw new Error('Status not 200')
+
+    var encoding = res.headers['content-encoding']
+    if (encoding == 'gzip') {
+      res.pipe(zlib.createGunzip()).pipe(outStream)
+    } else if (encoding == 'deflate') {
+      res.pipe(zlib.createInflate()).pipe(outStream)
+    } else {
+      res.pipe(outStream)
+    }
+  })
+
+  req.on('end', function (err) {
+  	callback(err, outStream);
+  });
+
+  var outStream = fs.createWriteStream(options.dest);
 }
-
-
 
 module.exports = maxloader;
